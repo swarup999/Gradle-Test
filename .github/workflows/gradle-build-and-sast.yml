@@ -1,0 +1,71 @@
+name: Gradle Build and SAST Check
+
+on:
+  push:
+    branches:
+      - main  # Adjust this to your main branch name
+  pull_request:
+    branches:
+      - main  # Adjust this to your main branch name
+
+jobs:
+  build-and-sast:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+
+      - name: Validate Gradle Wrapper
+        uses: gradle/wrapper-validation-action@v1
+
+      - name: Set up JDK
+        uses: actions/setup-java@v3
+        with:
+          distribution: 'temurin'  # Use 'temurin' for the AdoptOpenJDK distribution
+          java-version: '11'        # Adjust to your project's Java version
+
+      - name: Cache Gradle packages
+        uses: actions/cache@v3
+        with:
+          path: ~/.gradle/caches
+          key: ${{ runner.os }}-gradle-${{ hashFiles('**/build.gradle') }}
+          restore-keys: |
+            ${{ runner.os }}-gradle-
+
+      - name: Ensure gradlew is executable
+        run: chmod +x gradlew
+
+      - name: Build and test
+        run: ./gradlew build --continue || true
+
+      - name: Create project zip
+        run: zip -r project.zip . -x "*.git*"
+
+      - name: Perform SAST Scan
+        id: sast
+        run: |
+          RESPONSE=$(curl -X POST \
+            -H "Client-ID: ${{ secrets.SAST_CLIENT_ID }}" \
+            -H "Client-Secret: ${{ secrets.SAST_CLIENT_SECRET }}" \
+            -F "projectZipFile=@project.zip" \
+            -F "applicationId=${{ secrets.INTRUCEPT_APPLICATION_ID }}" \
+            -F "scanName=New Scan - Gradle - from GitHub Actions" \
+            -F "language=java" \
+            https://appsecops-api.intruceptlabs.com/api/v1/integrations/performSASTScan)
+          
+          echo "SAST Response: $RESPONSE"
+          
+          CAN_PROCEED=$(echo $RESPONSE | jq -r '.canProceed')
+          echo "canProceed=$CAN_PROCEED" >> $GITHUB_ENV
+
+      - name: Check SAST result
+        if: env.canProceed != 'true'
+        run: |
+          echo "SAST scan failed. Build cancelled."
+          exit 1
+
+      - name: Deploy or further steps
+        if: env.canProceed == 'true'
+        run: |
+          echo "SAST scan passed. Proceed with further steps or deployment."
+          # Add deployment steps or other actions here
